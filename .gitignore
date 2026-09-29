@@ -1,0 +1,55 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+*.pyo
+*.pyd
+.venv/
+venv/
+ENV/
+env/
+
+# Env
+.env
+
+# OS
+.DS_Store
+Thumbs.db
+._*
+
+# Node / Frontend
+frontend-vite/node_modules/
+frontend-vite/dist/
+frontend-vite/.vite/
+
+# Build artifacts
+build/
+dist/
+*.egg
+
+# Logs
+*.log
+*.tmp
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# GitHub / CI temp
+Users/
+.indexed_files.txt
+
+# Data / Corpus (private)
+corpus/
+*.pdf
+*.zip
+*.tar.gz
+
+# Misc
+.DS_Store
+.env
+.indexed_files.txt
