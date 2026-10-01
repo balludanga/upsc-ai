@@ -1102,6 +1102,49 @@ def chat(
         raise
 
 
+def chat_vision(
+    system_prompt: str,
+    user_prompt: str,
+    images: List[bytes],
+) -> str:
+    """
+    Ollama chat call that also attaches one or more images.
+
+    Used to transcribe handwritten answer uploads. Every image is passed
+    in a single request so that multi-page answers keep their page order
+    and the model can read continuations across pages.
+    """
+    if not images:
+        raise ValueError("At least one image is required.")
+
+    try:
+        response = ollama_client.chat(
+            model=settings.vision_model,
+            messages=[
+                {
+                    "role": "system",
+                    "content": system_prompt,
+                },
+                {
+                    "role": "user",
+                    "content": user_prompt,
+                    "images": list(images),
+                },
+            ],
+        )
+
+        content = response.get("message", {}).get("content")
+
+        if not content:
+            raise RuntimeError("Vision model returned an empty response")
+
+        return content.strip()
+
+    except Exception:
+        logger.exception("Ollama vision generation failed")
+        raise
+
+
 # -----------------------------------------------------------------------------
 # General Q&A
 # -----------------------------------------------------------------------------

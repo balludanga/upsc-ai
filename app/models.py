@@ -4,11 +4,13 @@ from sqlalchemy import (
     Column,
     Integer,
     String,
+    Text,
     DateTime,
     Date,
     ForeignKey,
     Boolean,
     JSON,
+    UniqueConstraint,
 )
 from sqlalchemy.orm import relationship
 
@@ -30,6 +32,11 @@ class User(Base):
         "MainsEvaluation",
         back_populates="user",
     )
+    chat_sessions = relationship(
+        "ChatSession",
+        back_populates="user",
+        cascade="all, delete-orphan",
+    )
 
 
 class QuizAttempt(Base):
@@ -46,6 +53,43 @@ class QuizAttempt(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
 
     user = relationship("User", back_populates="quiz_attempts")
+
+
+class PrelimsQuestion(Base):
+    __tablename__ = "prelims_questions"
+    __table_args__ = (
+        UniqueConstraint(
+            "source_id",
+            "question_number",
+            name="uq_prelims_source_question_number",
+        ),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    source_id = Column(String(64), nullable=False, index=True)
+    question_number = Column(Integer, nullable=False)
+    year = Column(Integer, nullable=False, index=True)
+    paper = Column(String(40), nullable=False, default="GS Paper I")
+    subject = Column(String(80), nullable=False, index=True)
+    topic = Column(String(120), nullable=False, index=True)
+    question = Column(Text, nullable=False)
+    options = Column(JSON, nullable=False)
+    correct_option = Column(String(1), nullable=False)
+    explanation = Column(Text, nullable=True)
+    source = Column(String(500), nullable=False)
+    source_url = Column(String(1000), nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+
+class PrelimsQuestionLevel(Base):
+    __tablename__ = "prelims_question_levels"
+
+    question_id = Column(
+        Integer,
+        ForeignKey("prelims_questions.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    difficulty = Column(Integer, nullable=False, default=2)
 
 
 class DailyUsage(Base):
@@ -89,3 +133,49 @@ class MainsEvaluation(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
 
     user = relationship("User", back_populates="mains_evaluations")
+
+
+class ChatSession(Base):
+    __tablename__ = "chat_sessions"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+
+    title = Column(String, nullable=False, default="New chat")
+
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(
+        DateTime,
+        default=datetime.utcnow,
+        onupdate=datetime.utcnow,
+    )
+
+    messages = relationship(
+        "ChatMessage",
+        back_populates="session",
+        cascade="all, delete-orphan",
+        order_by="ChatMessage.id",
+    )
+
+    user = relationship("User", back_populates="chat_sessions")
+
+
+class ChatMessage(Base):
+    __tablename__ = "chat_messages"
+
+    id = Column(Integer, primary_key=True, index=True)
+    session_id = Column(
+        Integer,
+        ForeignKey("chat_sessions.id"),
+        nullable=False,
+    )
+
+    role = Column(String, nullable=False)
+    content = Column(Text, nullable=False)
+
+    # Suggested follow-ups produced with this assistant reply.
+    suggestions = Column(JSON, nullable=True)
+
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    session = relationship("ChatSession", back_populates="messages")

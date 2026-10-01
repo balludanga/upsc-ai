@@ -39,6 +39,10 @@ services:
       - ollama
     ports:
       - "8000:8000"
+    volumes:
+      # Mount the app source so code edits do not require an image rebuild.
+      # Dependency changes still need: docker compose build api
+      - ./app:/app/app
 
 volumes:
   postgres_data:

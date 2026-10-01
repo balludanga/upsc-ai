@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import './StudyRoom.css'
 
 const API =
@@ -7,10 +7,16 @@ const API =
   'http://localhost:8000'
 
 async function request(path, options = {}, token) {
+  const isFormData =
+    typeof FormData !== 'undefined' &&
+    options.body instanceof FormData
+
   const response = await fetch(`${API}${path}`, {
     ...options,
     headers: {
-      'Content-Type': 'application/json',
+      ...(isFormData
+        ? {}
+        : { 'Content-Type': 'application/json' }),
       ...(token
         ? { Authorization: `Bearer ${token}` }
         : {}),
@@ -594,13 +600,128 @@ function MainsEvaluate({ token }) {
   const [result, setResult] = useState(null)
   const [loading, setLoading] = useState(false)
   const [message, setMessage] = useState('')
+  const [inputMode, setInputMode] =
+    useState('type')
+  const [files, setFiles] = useState([])
+  const [transcription, setTranscription] =
+    useState(null)
+
+  const MAX_FILES = 6
+
+  function addFiles(event) {
+    const picked = Array.from(
+      event.target.files || []
+    )
+
+    setFiles(current => {
+      const merged = [
+        ...current,
+        ...picked.filter(
+          file => !current.some(
+            existing =>
+              existing.name === file.name &&
+              existing.size === file.size
+          )
+        ),
+      ]
+
+      if (merged.length > MAX_FILES) {
+        setMessage(
+          `Attach at most ${MAX_FILES} files.`
+        )
+      }
+
+      return merged.slice(0, MAX_FILES)
+    })
+
+    setMessage('')
+    event.target.value = ''
+  }
+
+  function removeFile(index) {
+    setFiles(current =>
+      current.filter((_, i) => i !== index)
+    )
+  }
+
+  function buildUploadBody(extra = {}) {
+    const body = new FormData()
+
+    body.append(
+      'question',
+      question.trim()
+    )
+    body.append('paper', paper)
+    body.append(
+      'word_limit',
+      String(wordLimit)
+    )
+
+    Object.entries(extra).forEach(
+      ([key, value]) =>
+        body.append(key, value)
+    )
+
+    files.forEach(file =>
+      body.append('files', file)
+    )
+
+    return body
+  }
+
+  async function transcribeFiles() {
+    if (!files.length) {
+      setMessage(
+        'Attach a photo or PDF of your handwritten answer first.'
+      )
+      return
+    }
+
+    setLoading(true)
+    setMessage('')
+
+    try {
+      const data = await request(
+        '/mains/transcribe',
+        {
+          method: 'POST',
+          body: buildUploadBody(),
+        },
+        token
+      )
+
+      setAnswer(data.answer || '')
+      setTranscription(data.transcription)
+    } catch (err) {
+      setMessage(
+        err instanceof Error
+          ? err.message
+          : 'Could not read that upload.'
+      )
+    } finally {
+      setLoading(false)
+    }
+  }
 
   async function evaluate(event) {
     event.preventDefault()
 
-    if (!question.trim() || !answer.trim()) {
+    if (!question.trim()) {
+      setMessage('Enter the question.')
+      return
+    }
+
+    if (inputMode === 'type' && !answer.trim()) {
+      setMessage('Enter your answer.')
+      return
+    }
+
+    if (
+      inputMode === 'upload' &&
+      !files.length
+    ) {
       setMessage(
-        'Enter both the question and your answer.'
+        'Attach a photo or PDF of your handwritten answer.'
       )
       return
     }
@@ -610,21 +731,32 @@ function MainsEvaluate({ token }) {
     setMessage('')
 
     try {
+      const uploading = inputMode === 'upload'
+
       const data = await request(
-        '/mains/evaluate',
+        uploading
+          ? '/mains/evaluate-upload'
+          : '/mains/evaluate',
         {
           method: 'POST',
-          body: JSON.stringify({
-            question,
-            answer,
-            paper,
-            word_limit: wordLimit,
-          }),
+          body: uploading
+            ? buildUploadBody()
+            : JSON.stringify({
+                question,
+                answer,
+                paper,
+                word_limit: wordLimit,
+              }),
         },
         token
       )
 
       setResult(data)
+
+      if (uploading) {
+        setAnswer(data.answer || '')
+        setTranscription(data.transcription)
+      }
     } catch (err) {
       setMessage(
         err instanceof Error
@@ -720,16 +852,128 @@ function MainsEvaluate({ token }) {
           />
         </label>
 
+        <div className="answer-source-toggle">
+          <button
+            type="button"
+            className={
+              inputMode === 'type'
+                ? 'source-chip active'
+                : 'source-chip'
+            }
+            onClick={() =>
+              setInputMode('type')
+            }
+          >
+            Type my answer
+          </button>
+
+          <button
+            type="button"
+            className={
+              inputMode === 'upload'
+                ? 'source-chip active'
+                : 'source-chip'
+            }
+            onClick={() =>
+              setInputMode('upload')
+            }
+          >
+            Upload handwritten
+          </button>
+        </div>
+
+        {inputMode === 'upload' && (
+          <div className="upload-panel">
+            <label className="upload-dropzone">
+              <input
+                type="file"
+                multiple
+                accept="image/*,application/pdf,.pdf"
+                onChange={addFiles}
+              />
+              <strong>
+                Add photos or a PDF
+              </strong>
+              <span>
+                Upload clear, well-lit photos of your
+                handwritten answer, or a scanned PDF
+                (up to {MAX_FILES} files).
+              </span>
+            </label>
+
+            {files.length > 0 && (
+              <ul className="upload-file-list">
+                {files.map((file, index) => (
+                  <li key={`${file.name}-${file.size}`}>
+                    <span>
+                      {file.name}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() =>
+                        removeFile(index)
+                      }
+                    >
+                      Remove
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
+
+            <button
+              type="button"
+              className="ghost-button"
+              disabled={loading || !files.length}
+              onClick={transcribeFiles}
+            >
+              {loading
+                ? 'Reading...'
+                : 'Read handwriting first'}
+            </button>
+
+            {transcription && (
+              <small className="transcription-meta">
+                Read {transcription.pages || 0}{' '}
+                page(s) with{' '}
+                {transcription.engine}. Proofread
+                below before evaluating.
+              </small>
+            )}
+
+            {Array.isArray(
+              transcription?.warnings
+            ) &&
+              transcription.warnings.map(
+                (warning, index) => (
+                  <small
+                    key={index}
+                    className="transcription-warning"
+                  >
+                    {warning}
+                  </small>
+                )
+              )}
+          </div>
+        )}
+
         <label className="wide">
-          <span>Your Answer</span>
+          <span>
+            {inputMode === 'upload'
+              ? 'Transcribed Answer'
+              : 'Your Answer'}
+          </span>
           <textarea
             className="evaluation-answer-input"
-            required
             value={answer}
             onChange={event =>
               setAnswer(event.target.value)
             }
-            placeholder="Write your answer here. Try to answer first without seeing an AI draft."
+            placeholder={
+              inputMode === 'upload'
+                ? 'Your uploaded answer will appear here. You can correct any misread words before evaluating.'
+                : 'Write your answer here. Try to answer first without seeing an AI draft.'
+            }
           />
           <small className="word-counter">
             {answer.trim()
@@ -939,6 +1183,1113 @@ function MainsEvaluate({ token }) {
 }
 
 
+function formatChatTime(value) {
+  if (!value) return ''
+
+  const parsed = new Date(value)
+
+  if (Number.isNaN(parsed.getTime())) {
+    return ''
+  }
+
+  return parsed.toLocaleString(undefined, {
+    day: 'numeric',
+    month: 'short',
+    hour: '2-digit',
+    minute: '2-digit',
+  })
+}
+
+
+function ChatRoom({ token }) {
+  const [sessions, setSessions] = useState([])
+  const [activeId, setActiveId] = useState(null)
+  const [messages, setMessages] = useState([])
+  const [starters, setStarters] = useState([])
+  const [input, setInput] = useState('')
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState('')
+  const threadRef = useRef(null)
+
+  const isEmpty = messages.length === 0
+
+  useEffect(() => {
+    loadSessions()
+    loadStarters()
+  }, [token])
+
+  useEffect(() => {
+    const node = threadRef.current
+
+    if (node) {
+      node.scrollTop = node.scrollHeight
+    }
+  }, [messages, loading])
+
+  async function loadSessions() {
+    try {
+      const data = await request(
+        '/ask/chat/sessions',
+        {},
+        token
+      )
+      setSessions(Array.isArray(data) ? data : [])
+    } catch (err) {
+      setSessions([])
+    }
+  }
+
+  async function loadStarters() {
+    try {
+      const data = await request(
+        '/ask/chat/starter-topics',
+        {},
+        token
+      )
+      setStarters(data.topics || [])
+    } catch (err) {
+      setStarters([])
+    }
+  }
+
+  async function openSession(id) {
+    setError('')
+    setActiveId(id)
+    setInput('')
+
+    try {
+      const data = await request(
+        `/ask/chat/sessions/${id}`,
+        {},
+        token
+      )
+      setMessages(data.messages || [])
+    } catch (err) {
+      setError(
+        err instanceof Error
+          ? err.message
+          : 'Could not open that chat.'
+      )
+    }
+  }
+
+  function startNewChat() {
+    setActiveId(null)
+    setMessages([])
+    setInput('')
+    setError('')
+  }
+
+  async function removeSession(id) {
+    try {
+      await request(
+        `/ask/chat/sessions/${id}`,
+        { method: 'DELETE' },
+        token
+      )
+    } catch (err) {
+      setError(
+        err instanceof Error
+          ? err.message
+          : 'Could not delete that chat.'
+      )
+      return
+    }
+
+    if (activeId === id) {
+      startNewChat()
+    }
+
+    loadSessions()
+  }
+
+  async function send(text) {
+    const question = (text || '').trim()
+
+    if (!question || loading) return
+
+    setLoading(true)
+    setError('')
+    setInput('')
+
+    const pending = {
+      id: `pending-${Date.now()}`,
+      role: 'user',
+      content: question,
+      suggestions: [],
+    }
+
+    setMessages(current => [...current, pending])
+
+    try {
+      const data = await request(
+        '/ask/chat',
+        {
+          method: 'POST',
+          body: JSON.stringify({
+            question,
+            session_id: activeId,
+          }),
+        },
+        token
+      )
+
+      const sessionId = data.session_id
+      setActiveId(sessionId || null)
+
+      if (typeof data.answer === 'string' && data.answer.trim()) {
+        setMessages(current => [
+          ...current.map(item =>
+            item.id === pending.id
+              ? {
+                  ...item,
+                  id: `user-${Date.now()}`,
+                }
+              : item
+          ),
+          {
+            id: `answer-${Date.now()}`,
+            role: 'assistant',
+            content: data.answer,
+            suggestions: Array.isArray(data.suggestions)
+              ? data.suggestions
+              : [],
+          },
+        ])
+      }
+
+      loadSessions()
+
+      if (
+        sessionId &&
+        (typeof data.answer !== 'string' || !data.answer.trim())
+      ) {
+        try {
+          const savedSession = await request(
+            `/ask/chat/sessions/${sessionId}`,
+            {},
+            token
+          )
+          const savedMessages = Array.isArray(savedSession.messages)
+            ? savedSession.messages
+            : []
+          let latestUserIndex = -1
+
+          for (let index = savedMessages.length - 1; index >= 0; index -= 1) {
+            const message = savedMessages[index]
+
+            if (
+              message.role === 'user' &&
+              message.content === question
+            ) {
+              latestUserIndex = index
+              break
+            }
+          }
+
+          const savedAnswer = savedMessages
+            .slice(latestUserIndex + 1)
+            .find(message =>
+              message.role === 'assistant' &&
+              typeof message.content === 'string' &&
+              message.content.trim()
+            )
+
+          if (latestUserIndex >= 0 && savedAnswer) {
+            setMessages(savedMessages)
+          } else {
+            setError(
+              'Your question was saved, but its answer is still unavailable. Please try reopening this chat shortly.'
+            )
+          }
+        } catch (refreshError) {
+          setError(
+            refreshError instanceof Error
+              ? `Your answer was saved, but the chat could not refresh: ${refreshError.message}`
+              : 'Your answer was saved, but the chat could not refresh.'
+          )
+        }
+      }
+
+      if (!sessionId && (typeof data.answer !== 'string' || !data.answer.trim())) {
+        setError(
+          'Your question was sent, but the server did not return a chat session or answer.'
+        )
+      }
+    } catch (err) {
+      setMessages(current =>
+        current.filter(item => item.id !== pending.id)
+      )
+      setInput(question)
+      setError(
+        err instanceof Error
+          ? err.message
+          : 'Could not complete that question.'
+      )
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  function submit(event) {
+    event.preventDefault()
+    send(input)
+  }
+
+  return (
+    <section>
+      <Heading
+        kicker="STUDY CHAT"
+        title="Learn one thing at a time."
+      />
+
+      <p className="tool-intro">
+        Ask anything about your syllabus. Each reply comes with
+        suggested next topics so you always know what to
+        study after this.
+      </p>
+
+      <div className="chat-layout">
+        <aside className="chat-sidebar">
+          <button
+            className="chat-new-button"
+            type="button"
+            onClick={startNewChat}
+          >
+            + New chat
+          </button>
+
+          {sessions.length === 0 && (
+            <p className="chat-sidebar-empty">
+              Your saved chats will appear
+              here.
+            </p>
+          )}
+
+          {sessions.map(session => (
+            <div
+              key={session.id}
+              className={
+                session.id === activeId
+                  ? 'chat-session active'
+                  : 'chat-session'
+              }
+            >
+              <button
+                type="button"
+                className="chat-session-open"
+                onClick={() =>
+                  openSession(session.id)
+                }
+              >
+                <strong>{session.title}</strong>
+                <small>
+                  {session.message_count}{' '}
+                  message(s) ·{' '}
+                  {formatChatTime(session.updated_at)}
+                </small>
+              </button>
+
+              <button
+                type="button"
+                className="chat-session-delete"
+                onClick={() =>
+                  removeSession(session.id)
+                }
+              >
+                Delete
+              </button>
+            </div>
+          ))}
+        </aside>
+
+        <div className="chat-main">
+          <div
+            className="chat-thread"
+            ref={threadRef}
+          >
+            {isEmpty ? (
+              <div className="chat-empty">
+                <h3>
+                  What would you like to
+                  understand today?
+                </h3>
+
+                <p>
+                  Pick a topic to begin, or ask
+                  your own question below.
+                </p>
+
+                <div className="chat-starters">
+                  {starters.map(topic => (
+                    <button
+                      key={topic}
+                      type="button"
+                      onClick={() => send(topic)}
+                    >
+                      {topic}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            ) : (
+              messages.map(message => (
+                <div key={message.id}>
+                  <div
+                    className={
+                      message.role === 'user'
+                        ? 'chat-bubble user'
+                        : 'chat-bubble assistant'
+                    }
+                  >
+                    <AnswerText
+                      answer={message.content}
+                    />
+                  </div>
+
+                  {message.role === 'assistant' &&
+                    Array.isArray(
+                      message.suggestions
+                    ) &&
+                    message.suggestions.length >
+                      0 && (
+                      <div className="chat-suggestions">
+                        <span className="chat-suggestions-label">
+                          NEXT, TRY:
+                        </span>
+
+                        {message.suggestions.map(
+                          suggestion => (
+                            <button
+                              key={suggestion}
+                              type="button"
+                              disabled={loading}
+                              onClick={() =>
+                                send(suggestion)
+                              }
+                            >
+                              {suggestion}
+                            </button>
+                          )
+                        )}
+                      </div>
+                    )}
+                </div>
+              ))
+            )}
+
+            {loading && (
+              <div className="chat-bubble assistant chat-typing">
+                Thinking...
+              </div>
+            )}
+          </div>
+
+          {error && (
+            <div
+              className="notice"
+              onClick={() => setError('')}
+            >
+              {error}
+            </div>
+          )}
+
+          <form
+            className="ask-box chat-composer"
+            onSubmit={submit}
+          >
+            <textarea
+              required
+              rows={1}
+              minLength="2"
+              value={input}
+              onChange={event =>
+                setInput(event.target.value)
+              }
+              onKeyDown={event => {
+                if (
+                  event.key === 'Enter' &&
+                  !event.shiftKey
+                ) {
+                  event.preventDefault()
+                  send(input)
+                }
+              }}
+              placeholder="Message your UPSC study partner"
+              aria-label="Message your UPSC study partner"
+            />
+
+            <button
+              className="dark-button"
+              type="submit"
+              disabled={loading}
+              aria-label={loading ? 'Sending message' : 'Send message'}
+            >
+              <span>{loading ? 'Sending...' : 'Send'}</span>
+              <b aria-hidden="true">↑</b>
+            </button>
+          </form>
+          <p className="chat-composer-hint">
+            Check important facts against official UPSC sources.
+          </p>
+        </div>
+      </div>
+    </section>
+  )
+}
+
+
+function PrelimsDrill({ token, onProgress }) {
+  const [catalog, setCatalog] = useState([])
+  const [subject, setSubject] = useState('')
+  const [topic, setTopic] = useState('')
+  const [questionCount, setQuestionCount] = useState(10)
+  const [quizView, setQuizView] = useState('hub')
+  const [quiz, setQuiz] = useState([])
+  const [quizResponses, setQuizResponses] = useState([])
+  const [quizQuestionIndex, setQuizQuestionIndex] = useState(0)
+  const [quizSelectedOption, setQuizSelectedOption] = useState('')
+  const [submittingQuestionId, setSubmittingQuestionId] = useState(null)
+  const [reviewLoading, setReviewLoading] = useState(false)
+  const [reviewError, setReviewError] = useState('')
+  const [curiosityQuestion, setCuriosityQuestion] = useState(null)
+  const [curiosityChoice, setCuriosityChoice] = useState('')
+  const [curiosityResult, setCuriosityResult] = useState(null)
+  const [curiosityNotice, setCuriosityNotice] = useState('')
+  const [curiosityLoading, setCuriosityLoading] = useState(true)
+  const [curiosityDifficulty, setCuriosityDifficulty] = useState(2)
+  const [seenQuestionIds, setSeenQuestionIds] = useState([])
+  const [loadingCatalog, setLoadingCatalog] = useState(true)
+  const [loadingQuiz, setLoadingQuiz] = useState(false)
+  const [error, setError] = useState('')
+  const curiosityTokenLoaded = useRef(null)
+
+  const selectedSubject = catalog.find(item => item.name === subject)
+  const topics = selectedSubject?.topics || []
+
+  useEffect(() => {
+    let cancelled = false
+
+    async function loadCatalog() {
+      setLoadingCatalog(true)
+      try {
+        const data = await request('/quiz/catalog', {}, token)
+        if (!cancelled) {
+          setCatalog(Array.isArray(data.subjects) ? data.subjects : [])
+        }
+      } catch (err) {
+        if (!cancelled) {
+          setError(
+            err instanceof Error
+              ? err.message
+              : 'Could not load the question bank.'
+          )
+        }
+      } finally {
+        if (!cancelled) setLoadingCatalog(false)
+      }
+    }
+
+    loadCatalog()
+    return () => {
+      cancelled = true
+    }
+  }, [token])
+
+  const loadNextCuriosityQuestion = useCallback(async (
+    targetDifficulty,
+    excludedIds,
+    initialLoad = false
+  ) => {
+    if (!initialLoad) {
+      setCuriosityLoading(true)
+      setCuriosityNotice('')
+      setCuriosityResult(null)
+      setCuriosityChoice('')
+    }
+
+    try {
+      const params = new URLSearchParams({
+        target_difficulty: String(targetDifficulty),
+      })
+      excludedIds.forEach(id => params.append('exclude', String(id)))
+      const question = await request(
+        `/quiz/practice/next?${params.toString()}`,
+        {},
+        token
+      )
+      setCuriosityQuestion(question)
+      setSeenQuestionIds(current =>
+        current.includes(question.bank_id)
+          ? current
+          : [...current, question.bank_id]
+      )
+    } catch (err) {
+      setCuriosityQuestion(null)
+      setCuriosityNotice(
+        err instanceof Error
+          ? err.message
+          : 'Could not load the next practice question.'
+      )
+    } finally {
+      setCuriosityLoading(false)
+    }
+  }, [token])
+
+  useEffect(() => {
+    if (curiosityTokenLoaded.current === token) return
+    curiosityTokenLoaded.current = token
+    loadNextCuriosityQuestion(2, [], true)
+  }, [loadNextCuriosityQuestion, token])
+
+  async function answerCuriosityQuestion(selectedOption = curiosityChoice) {
+    if (!curiosityQuestion || !selectedOption || curiosityResult) return
+
+    setCuriosityChoice(selectedOption)
+    setCuriosityLoading(true)
+    setCuriosityNotice('')
+
+    try {
+      const result = await request(
+        '/quiz/submit',
+        {
+          method: 'POST',
+          body: JSON.stringify({
+            quiz_attempt_id: curiosityQuestion.id,
+            selected_option: selectedOption,
+          }),
+        },
+        token
+      )
+      setCuriosityResult(result)
+      setCuriosityDifficulty(
+        result.correct
+          ? Math.min(curiosityQuestion.difficulty + 1, 3)
+          : Math.max(curiosityQuestion.difficulty - 1, 1)
+      )
+      onProgress()
+    } catch (err) {
+      setCuriosityNotice(
+        err instanceof Error
+          ? err.message
+          : 'Could not submit your answer.'
+      )
+    } finally {
+      setCuriosityLoading(false)
+    }
+  }
+
+  function nextCuriosityQuestion() {
+    loadNextCuriosityQuestion(curiosityDifficulty, seenQuestionIds)
+  }
+
+  async function startFreshCuriosityRound() {
+    setSeenQuestionIds([])
+    await loadNextCuriosityQuestion(curiosityDifficulty, [])
+  }
+
+  async function startQuiz(event) {
+    event.preventDefault()
+    setLoadingQuiz(true)
+    setError('')
+
+    try {
+      const data = await request(
+        '/quiz/generate',
+        {
+          method: 'POST',
+          body: JSON.stringify({
+            subject: subject || null,
+            topic: topic || null,
+            num_questions: Number(questionCount),
+          }),
+        },
+        token
+      )
+      const questions = Array.isArray(data.questions) ? data.questions : []
+      if (questions.length === 0) {
+        setError('No questions are available for this practice set yet.')
+        return
+      }
+
+      setQuiz(questions)
+      setQuizResponses([])
+      setQuizQuestionIndex(0)
+      setQuizSelectedOption('')
+      setReviewError('')
+      setQuizView('quiz')
+    } catch (err) {
+      setError(
+        err instanceof Error
+          ? err.message
+          : 'Could not assemble this practice set.'
+      )
+    } finally {
+      setLoadingQuiz(false)
+    }
+  }
+
+  async function recordQuizAnswer(questionId, selectedOption) {
+    if (
+      quizResponses.some(response => response.questionId === questionId) ||
+      submittingQuestionId === questionId
+    ) return
+    setSubmittingQuestionId(questionId)
+    setError('')
+
+    try {
+      const result = await request(
+        '/quiz/submit',
+        {
+          method: 'POST',
+          body: JSON.stringify({
+            quiz_attempt_id: questionId,
+            selected_option: selectedOption,
+          }),
+        },
+        token
+      )
+      advanceQuiz({
+        questionId,
+        status: result.correct ? 'correct' : 'incorrect',
+        selectedOption: result.selected_option,
+        correctOption: result.correct_option,
+      })
+      onProgress()
+    } catch (err) {
+      setError(
+        err instanceof Error
+          ? err.message
+          : 'Could not submit your answer.'
+      )
+    } finally {
+      setSubmittingQuestionId(null)
+    }
+  }
+
+  async function loadQuizAnswerReview(responses) {
+    setReviewLoading(true)
+    setReviewError('')
+
+    try {
+      const data = await request(
+        '/quiz/review',
+        {
+          method: 'POST',
+          body: JSON.stringify({
+            attempt_ids: responses.map(response => response.questionId),
+          }),
+        },
+        token
+      )
+      const answers = new Map(
+        data.answers.map(answer => [answer.attempt_id, answer.correct_option])
+      )
+      setQuizResponses(current =>
+        current.map(response => ({
+          ...response,
+          correctOption: response.correctOption || answers.get(response.questionId),
+        }))
+      )
+    } catch (err) {
+      setReviewError(
+        err instanceof Error
+          ? err.message
+          : 'Could not load the answer key for this quiz.'
+      )
+    } finally {
+      setReviewLoading(false)
+    }
+  }
+
+  function advanceQuiz(response) {
+    const nextResponses = [...quizResponses, response]
+    setQuizResponses(nextResponses)
+    setQuizSelectedOption('')
+
+    if (quizQuestionIndex + 1 === quiz.length) {
+      setQuizView('results')
+      loadQuizAnswerReview(nextResponses)
+    } else {
+      setQuizQuestionIndex(index => index + 1)
+    }
+  }
+
+  function skipCurrentQuestion() {
+    if (submittingQuestionId !== null) return
+    const question = quiz[quizQuestionIndex]
+    if (!question) return
+
+    advanceQuiz({
+      questionId: question.id,
+      status: 'skipped',
+      selectedOption: null,
+      correctOption: null,
+    })
+  }
+
+  function returnToPracticeHub() {
+    setQuizView('hub')
+    setQuiz([])
+    setQuizResponses([])
+    setQuizQuestionIndex(0)
+    setQuizSelectedOption('')
+    setReviewError('')
+  }
+
+  /*
+   * The compact adaptive loop below always samples across all subjects.
+   * The subject/topic controls only affect the separate longer practice set.
+   */
+  const curiosityFeedback = curiosityResult
+    ? curiosityResult.correct
+      ? curiosityQuestion.difficulty < 3
+        ? 'Correct! Let’s try a slightly harder one.'
+        : 'Correct! You’re at challenge level—keep the streak going.'
+      : curiosityQuestion.difficulty > 1
+        ? `Not quite. The answer is ${curiosityResult.correct_option}. Let’s build confidence with an easier one.`
+        : `Not quite. The answer is ${curiosityResult.correct_option}. We’ll stay with a gentle question and keep learning.`
+    : ''
+
+  if (quizView === 'quiz') {
+    const question = quiz[quizQuestionIndex]
+
+    return (
+      <section className="prelims-page prelims-quiz-page">
+        <button
+          className="outline-button prelims-back-button"
+          type="button"
+          onClick={returnToPracticeHub}
+          disabled={submittingQuestionId !== null}
+        >
+          ← Back to practice setup
+        </button>
+        <div className="prelims-quiz-heading">
+          <div>
+            <span className="kicker">UPSC PRELIMS / PRACTICE QUIZ</span>
+            <h1>Stay with one question at a time.</h1>
+          </div>
+          <span className="prelims-quiz-count">
+            Question {quizQuestionIndex + 1} of {quiz.length}
+          </span>
+        </div>
+        <progress
+          className="prelims-quiz-progress"
+          value={quizQuestionIndex + 1}
+          max={quiz.length}
+          aria-label={`Question ${quizQuestionIndex + 1} of ${quiz.length}`}
+        />
+        {error && <div className="notice" role="alert">{error}</div>}
+        {question && (
+          <article className="surface prelims-question prelims-current-question">
+            <div className="prelims-question-meta">
+              <span>{question.year} · {question.subject} · {question.topic}</span>
+              <span>{question.source}</span>
+            </div>
+            <h2>{question.question}</h2>
+            <div className="prelims-options">
+              {question.options.map((option, index) => {
+                const letter = String.fromCharCode(65 + index)
+                return (
+                  <label
+                    className={[
+                      'prelims-option',
+                      quizSelectedOption === letter ? 'selected' : '',
+                    ].filter(Boolean).join(' ')}
+                    key={`${question.id}-${letter}`}
+                  >
+                    <input
+                      type="radio"
+                      name={`quiz-question-${question.id}`}
+                      value={letter}
+                      checked={quizSelectedOption === letter}
+                      disabled={submittingQuestionId === question.id}
+                      onChange={() => setQuizSelectedOption(letter)}
+                    />
+                    <span className="prelims-option-letter">{letter}</span>
+                    <span>{option}</span>
+                  </label>
+                )
+              })}
+            </div>
+            <div className="prelims-quiz-actions">
+              <button
+                className="outline-button"
+                type="button"
+                onClick={skipCurrentQuestion}
+                disabled={submittingQuestionId !== null}
+              >
+                Skip question
+              </button>
+              <button
+                className="dark-button"
+                type="button"
+                onClick={() => recordQuizAnswer(question.id, quizSelectedOption)}
+                disabled={!quizSelectedOption || submittingQuestionId !== null}
+              >
+                {submittingQuestionId === question.id
+                  ? 'Submitting…'
+                  : quizQuestionIndex + 1 === quiz.length
+                    ? 'Submit & see results'
+                    : 'Submit & next'}
+                <b aria-hidden="true">→</b>
+              </button>
+            </div>
+          </article>
+        )}
+      </section>
+    )
+  }
+
+  if (quizView === 'results') {
+    const correctAnswers = quizResponses.filter(item => item.status === 'correct').length
+    const incorrectAnswers = quizResponses.filter(item => item.status === 'incorrect').length
+    const skippedAnswers = quizResponses.filter(item => item.status === 'skipped').length
+    const attemptedAnswers = correctAnswers + incorrectAnswers
+
+    return (
+      <section className="prelims-page prelims-results-page">
+        <span className="kicker">UPSC PRELIMS / QUIZ COMPLETE</span>
+        <h1>Your practice results</h1>
+        <p className="tool-intro">
+          You answered {attemptedAnswers} of {quiz.length} questions and skipped {skippedAnswers}.
+        </p>
+        <div className="prelims-result-summary">
+          <article>
+            <strong>{correctAnswers}</strong>
+            <span>Correct</span>
+          </article>
+          <article>
+            <strong>{incorrectAnswers}</strong>
+            <span>Incorrect</span>
+          </article>
+          <article>
+            <strong>{skippedAnswers}</strong>
+            <span>Skipped</span>
+          </article>
+          <article>
+            <strong>{attemptedAnswers ? Math.round(correctAnswers / attemptedAnswers * 100) : 0}%</strong>
+            <span>Accuracy</span>
+          </article>
+        </div>
+        <div className="prelims-result-review">
+          {reviewError && (
+            <div className="notice" role="alert">
+              {reviewError}
+              <button
+                className="outline-button"
+                type="button"
+                onClick={() => loadQuizAnswerReview(quizResponses)}
+                disabled={reviewLoading}
+              >
+                {reviewLoading ? 'Loading answers…' : 'Retry answer review'}
+              </button>
+            </div>
+          )}
+          {quizResponses.map((response, index) => {
+            const question = quiz.find(item => item.id === response.questionId)
+            if (!question) return null
+
+            return (
+              <article className="surface prelims-result-item" key={response.questionId}>
+                <div className="prelims-question-meta">
+                  <span>QUESTION {String(index + 1).padStart(2, '0')}</span>
+                  <span className={`prelims-result-status ${response.status}`}>
+                    {response.status}
+                  </span>
+                </div>
+                <h2>{question.question}</h2>
+                <p>
+                  {response.status === 'skipped'
+                    ? `Skipped · Correct answer: ${response.correctOption || (reviewLoading ? 'Loading…' : 'Unavailable')}`
+                    : `Your answer: ${response.selectedOption} · Correct answer: ${response.correctOption}`}
+                </p>
+                {question.explanation && <p>{question.explanation}</p>}
+              </article>
+            )
+          })}
+        </div>
+        <button className="dark-button" type="button" onClick={returnToPracticeHub}>
+          Back to practice setup <b aria-hidden="true">→</b>
+        </button>
+      </section>
+    )
+  }
+
+  return (
+    <section className="prelims-page">
+      <Heading
+        kicker="UPSC PRELIMS / QUESTION BANK"
+        title="Practice real questions."
+      />
+
+      <p className="tool-intro">
+        Build a practice set from sourced previous-year questions. AI only
+        selects and orders questions already in the bank; it never writes
+        questions.
+      </p>
+
+      <form className="prelims-controls" onSubmit={startQuiz}>
+        <label>
+          Subject
+          <select
+            value={subject}
+            onChange={event => {
+              setSubject(event.target.value)
+              setTopic('')
+            }}
+            disabled={loadingCatalog || catalog.length === 0}
+          >
+            <option value="">All subjects</option>
+            {catalog.map(item => (
+              <option key={item.name} value={item.name}>
+                {item.name} ({item.question_count})
+              </option>
+            ))}
+          </select>
+        </label>
+
+        <label>
+          Topic
+          <select
+            value={topic}
+            onChange={event => setTopic(event.target.value)}
+            disabled={loadingCatalog || topics.length === 0}
+          >
+            <option value="">All topics</option>
+            {topics.map(item => (
+              <option key={item.name} value={item.name}>
+                {item.name} ({item.question_count})
+              </option>
+            ))}
+          </select>
+        </label>
+
+        <label>
+          Questions
+          <select
+            value={questionCount}
+            onChange={event => setQuestionCount(Number(event.target.value))}
+          >
+            {[5, 10, 15, 20].map(count => (
+              <option key={count} value={count}>{count}</option>
+            ))}
+          </select>
+        </label>
+
+        <button
+          className="dark-button"
+          type="submit"
+          disabled={loadingQuiz || loadingCatalog || catalog.length === 0}
+        >
+          {loadingQuiz ? 'Assembling...' : 'Start practice'}
+          <b aria-hidden="true">→</b>
+        </button>
+      </form>
+
+      <article className="curiosity-card">
+        {curiosityLoading && (
+          <p className="curiosity-loading" role="status">
+            Finding your next question…
+          </p>
+        )}
+
+        {!curiosityLoading && curiosityQuestion && (
+          <>
+            <h3 className="curiosity-question">
+              {curiosityQuestion.question}
+            </h3>
+            <div className="curiosity-options">
+              {curiosityQuestion.options.map((option, index) => {
+                const letter = String.fromCharCode(65 + index)
+                const isCorrect = curiosityResult?.correct_option === letter
+                const isWrongPick =
+                  curiosityResult?.selected_option === letter &&
+                  !curiosityResult.correct
+                return (
+                  <label
+                    className={[
+                      'curiosity-option',
+                      isCorrect ? 'correct' : '',
+                      isWrongPick ? 'incorrect' : '',
+                    ].filter(Boolean).join(' ')}
+                    key={`${curiosityQuestion.id}-${letter}`}
+                  >
+                    <input
+                      type="radio"
+                      name={`curiosity-${curiosityQuestion.id}`}
+                      value={letter}
+                      checked={curiosityChoice === letter}
+                      disabled={Boolean(curiosityResult) || curiosityLoading}
+                      onChange={() => answerCuriosityQuestion(letter)}
+                    />
+                    <span className="curiosity-option-letter">{letter}</span>
+                    <span>{option}</span>
+                  </label>
+                )
+              })}
+            </div>
+
+            {curiosityResult && (
+              <div className="curiosity-after-answer">
+                <p
+                  className={`curiosity-feedback ${curiosityResult.correct ? 'correct' : 'incorrect'}`}
+                  role="status"
+                >
+                  {curiosityFeedback}
+                </p>
+                <button
+                  className="dark-button"
+                  type="button"
+                  onClick={nextCuriosityQuestion}
+                  disabled={curiosityLoading}
+                >
+                  Next question <b aria-hidden="true">→</b>
+                </button>
+              </div>
+            )}
+          </>
+        )}
+
+        {!curiosityLoading && !curiosityQuestion && (
+          <div className="curiosity-empty">
+            <p>{curiosityNotice || 'No answer-keyed questions are available yet.'}</p>
+            {curiosityNotice.toLowerCase().includes('explored all available questions') && (
+              <button
+                className="outline-button"
+                type="button"
+                onClick={startFreshCuriosityRound}
+              >
+                Start a fresh round
+              </button>
+            )}
+          </div>
+        )}
+
+        {curiosityNotice && curiosityQuestion && (
+          <div className="notice" role="alert">{curiosityNotice}</div>
+        )}
+      </article>
+
+      {loadingCatalog && <p className="muted">Loading available questions…</p>}
+
+      {!loadingCatalog && catalog.length === 0 && (
+        <div className="prelims-empty">
+          <h3>Your question bank is ready for PYQs.</h3>
+          <p>
+            No answer-keyed questions have been imported yet. Import an
+            official searchable GS Paper I PDF with its answer-key CSV using
+            <code>scripts/import_prelims.py</code>.
+          </p>
+        </div>
+      )}
+
+      {error && <div className="notice" role="alert">{error}</div>}
+    </section>
+  )
+}
+
+
 function StudyRoom({
   token,
   email,
@@ -950,16 +2301,6 @@ function StudyRoom({
     useState(null)
   const [plan, setPlan] =
     useState(null)
-  const [question, setQuestion] =
-    useState('')
-  const [answer, setAnswer] =
-    useState(null)
-  const [topic, setTopic] =
-    useState('')
-  const [quiz, setQuiz] =
-    useState(null)
-  const [results, setResults] =
-    useState({})
   const [session, setSession] = useState({
     topic: '',
     mode: 'study',
@@ -1002,103 +2343,6 @@ function StudyRoom({
     refresh()
   }, [token])
 
-  async function ask(event) {
-    event.preventDefault()
-
-    if (!question.trim()) return
-
-    setAnswer(
-      'Preparing a corpus-grounded answer...'
-    )
-
-    try {
-      const data = await request(
-        '/ask',
-        {
-          method: 'POST',
-          body: JSON.stringify({
-            question,
-          }),
-        },
-        token
-      )
-
-      setAnswer(data.answer)
-    } catch (err) {
-      setAnswer(
-        err instanceof Error
-          ? err.message
-          : 'Could not answer that question.'
-      )
-    }
-  }
-
-  async function generateQuiz(event) {
-    event.preventDefault()
-    setQuiz(null)
-
-    try {
-      const data = await request(
-        '/quiz/generate',
-        {
-          method: 'POST',
-          body: JSON.stringify({
-            topic,
-            num_questions: 5,
-          }),
-        },
-        token
-      )
-
-      setQuiz(data.questions)
-      setResults({})
-    } catch (err) {
-      setMessage(
-        err instanceof Error
-          ? err.message
-          : 'Could not generate quiz.'
-      )
-    }
-  }
-
-  async function submitAnswer(
-    id,
-    optionIndex
-  ) {
-    const selected = String.fromCharCode(
-      65 + optionIndex
-    )
-
-    try {
-      const data = await request(
-        '/quiz/submit',
-        {
-          method: 'POST',
-          body: JSON.stringify({
-            quiz_attempt_id: id,
-            selected_option: selected,
-          }),
-        },
-        token
-      )
-
-      setResults(prev => ({
-        ...prev,
-        [id]: data.correct
-          ? 'Correct. Keep going.'
-          : `Not quite. Answer: ${data.correct_option}`,
-      }))
-
-      refresh()
-    } catch (err) {
-      setMessage(
-        err instanceof Error
-          ? err.message
-          : 'Could not submit answer.'
-      )
-    }
-  }
-
   async function logSession(event) {
     event.preventDefault()
 
@@ -1138,31 +2382,30 @@ function StudyRoom({
   }
 
   const navItems = [
-    ['overview', '01', 'Overview'],
-    ['ask', '02', 'Ask'],
-    ['mains', '03', 'Mains Drafting'],
+    ['overview', '⌂', 'Overview'],
+    ['ask', '✦', 'Study chat'],
+    ['mains', '▤', 'Mains Drafting'],
     [
       'evaluate',
-      '04',
+      '✓',
       'Answer Evaluation',
     ],
-    ['quiz', '05', 'Prelims Drill'],
-    ['log', '06', 'Log a session'],
+    ['quiz', '◉', 'Prelims Drill'],
+    ['log', '+', 'Log a session'],
   ]
 
   return (
-    <div className="room">
+    <div className={`room ${panel === 'ask' ? 'chat-mode' : ''}`}>
       <header className="header">
         <div>
-          <span className="kicker">
-            UPSC / PERSONAL CONSOLE
-          </span>
+          <span className="room-brand-mark" aria-hidden="true">U</span>
+          <span className="kicker">UPSC STUDY PARTNER</span>
           <h2>Study Room</h2>
         </div>
 
         <div className="header-right">
           <span>{email}</span>
-          <button onClick={onLogout}>
+          <button onClick={onLogout} aria-label="Sign out">
             Sign out
           </button>
         </div>
@@ -1179,6 +2422,9 @@ function StudyRoom({
                     ? 'active'
                     : ''
                 }
+                aria-label={label}
+                aria-current={panel === key ? 'page' : undefined}
+                title={label}
                 onClick={() =>
                   setPanel(key)
                 }
@@ -1209,50 +2455,7 @@ function StudyRoom({
           )}
 
           {panel === 'ask' && (
-            <section>
-              <Heading
-                kicker="CORPUS / UNDERSTAND"
-                title="Ask your corpus."
-              />
-
-              <p className="tool-intro">
-                Ask a question and get a concise,
-                corpus-grounded explanation.
-              </p>
-
-              <form
-                className="ask-box"
-                onSubmit={ask}
-              >
-                <textarea
-                  required
-                  minLength="3"
-                  value={question}
-                  onChange={event =>
-                    setQuestion(
-                      event.target.value
-                    )
-                  }
-                  placeholder="Explain fiscal federalism in India..."
-                />
-
-                <button
-                  className="dark-button"
-                  type="submit"
-                >
-                  Ask
-                  <b>-</b>
-                </button>
-              </form>
-
-              {answer && (
-                <article className="surface answer">
-                  <AnswerText
-                    answer={answer}
-                  />
-                </article>
-              )}
-            </section>
+            <ChatRoom token={token} />
           )}
 
           {panel === 'mains' && (
@@ -1266,93 +2469,7 @@ function StudyRoom({
           )}
 
           {panel === 'quiz' && (
-            <section>
-              <Heading
-                kicker="PRELIMS / ACTIVE RECALL"
-                title="Pressure-test a topic."
-              />
-
-              <form
-                className="quiz-start"
-                onSubmit={generateQuiz}
-              >
-                <input
-                  required
-                  value={topic}
-                  onChange={event =>
-                    setTopic(
-                      event.target.value
-                    )
-                  }
-                  placeholder="Fundamental Rights, Parliament, federalism..."
-                />
-
-                <button
-                  className="dark-button"
-                  type="submit"
-                >
-                  Generate drill
-                  <b>-</b>
-                </button>
-              </form>
-
-              {quiz?.map(
-                (item, index) => (
-                  <article
-                    className="surface question"
-                    key={item.id}
-                  >
-                    <span className="kicker">
-                      QUESTION{' '}
-                      {String(index + 1).padStart(
-                        2,
-                        '0'
-                      )}
-                    </span>
-
-                    <h3>
-                      {item.question}
-                    </h3>
-
-                    {item.options.map(
-                      (
-                        option,
-                        optionIndex
-                      ) => (
-                        <label
-                          className="option"
-                          key={option}
-                        >
-                          <input
-                            type="radio"
-                            name={`q-${item.id}`}
-                            onChange={() =>
-                              submitAnswer(
-                                item.id,
-                                optionIndex
-                              )
-                            }
-                          />
-
-                          <span>
-                            {String.fromCharCode(
-                              65 + optionIndex
-                            )}
-                            . {option}
-                          </span>
-                        </label>
-                      )
-                    )}
-
-                    {results[item.id] && (
-                      <p className="result">
-                        {results[item.id]}
-                      </p>
-                    )}
-                  </article>
-                )
-              )}
-            </section>
+            <PrelimsDrill token={token} onProgress={refresh} />
           )}
 
           {panel === 'log' && (

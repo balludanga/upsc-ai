@@ -32,21 +32,83 @@ class AskResponse(BaseModel):
     answer: str
 
 
+# --- Chat ---
+
+class ChatTurnRequest(BaseModel):
+    question: str = Field(min_length=2, max_length=2000)
+    session_id: Optional[int] = None
+
+
+class ChatSuggestion(BaseModel):
+    session_id: int
+    question: str
+    answer: str
+    suggestions: List[str]
+    title: str
+
+
+class ChatMessageOut(BaseModel):
+    id: int
+    role: str
+    content: str
+    suggestions: List[str] = []
+    created_at: str
+
+
+class ChatSessionOut(BaseModel):
+    id: int
+    title: str
+    created_at: str
+    updated_at: str
+    message_count: int = 0
+
+
+class ChatSessionDetail(ChatSessionOut):
+    messages: List[ChatMessageOut] = []
+
+
 # --- Quiz ---
 
 class QuizGenerateRequest(BaseModel):
-    topic: str = Field(min_length=2, max_length=200)
+    topic: Optional[str] = Field(default=None, max_length=120)
+    subject: Optional[str] = Field(default=None, max_length=80)
     num_questions: int = Field(default=5, ge=1, le=20)
 
 
 class QuizQuestion(BaseModel):
     id: int
+    bank_id: int
     question: str
     options: List[str]
+    year: int
+    subject: str
+    topic: str
+    source: str
+    source_url: Optional[str] = None
+    difficulty: int = 2
 
 
 class QuizGenerateResponse(BaseModel):
     questions: List[QuizQuestion]
+
+
+class QuizPracticeQuestion(QuizQuestion):
+    pass
+
+
+class QuizTopicOut(BaseModel):
+    name: str
+    question_count: int
+
+
+class QuizSubjectOut(BaseModel):
+    name: str
+    question_count: int
+    topics: List[QuizTopicOut]
+
+
+class QuizCatalogResponse(BaseModel):
+    subjects: List[QuizSubjectOut]
 
 
 class QuizSubmitRequest(BaseModel):
@@ -57,6 +119,20 @@ class QuizSubmitRequest(BaseModel):
 class QuizSubmitResponse(BaseModel):
     correct: bool
     correct_option: Literal["A", "B", "C", "D"]
+    selected_option: Literal["A", "B", "C", "D"]
+
+
+class QuizReviewRequest(BaseModel):
+    attempt_ids: List[int] = Field(min_length=1, max_length=20)
+
+
+class QuizReviewItem(BaseModel):
+    attempt_id: int
+    correct_option: Literal["A", "B", "C", "D"]
+
+
+class QuizReviewResponse(BaseModel):
+    answers: List[QuizReviewItem]
 
 
 # --- Personal study tracking ---
@@ -122,4 +198,16 @@ class MainsEvaluateResponse(BaseModel):
     paper: str
     word_limit: int
     answer: str
+    evaluation: dict
+
+
+class MainsTranscriptionOut(BaseModel):
+    answer: str
+    transcription: dict
+
+
+class MainsEvaluateUploadResponse(MainsTranscriptionOut):
+    question: str
+    paper: str
+    word_limit: int
     evaluation: dict

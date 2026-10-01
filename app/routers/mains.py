@@ -1,19 +1,68 @@
-from fastapi import APIRouter, Depends, HTTPException
+from typing import List, Tuple
+
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from sqlalchemy.orm import Session
 
 from app.auth import get_current_user
+from app.config import settings
 from app.database import get_db
 from app.evaluator import evaluate_mains_answer
 from app.models import MainsEvaluation, User
+from app.ocr import UploadError, transcribe_uploads
 from app.rag import draft_mains_answer, normalize_paper
 from app.schemas import (
     MainsDraftRequest,
     MainsDraftResponse,
     MainsEvaluateRequest,
     MainsEvaluateResponse,
+    MainsEvaluateUploadResponse,
+    MainsTranscriptionOut,
 )
 
 router = APIRouter(prefix="/mains", tags=["mains"])
+
+
+def _read_uploads(
+    files: List[UploadFile],
+) -> List[Tuple[str, str, bytes]]:
+    """
+    Read multipart uploads into memory, enforcing the total size budget.
+    """
+    uploads: List[Tuple[str, str, bytes]] = []
+    total = 0
+
+    for upload in files:
+        if upload is None or not upload.filename:
+            continue
+
+        data = upload.file.read()
+
+        if not data:
+            continue
+
+        total += len(data)
+
+        if total > settings.upload_max_bytes:
+            raise UploadError(
+                "The upload is too large. Keep it under "
+                f"{settings.upload_max_bytes // (1024 * 1024)} MB "
+                "by uploading fewer pages at a time."
+            )
+
+        uploads.append(
+            (
+                upload.filename,
+                upload.content_type or "",
+                data,
+            )
+        )
+
+    if not uploads:
+        raise UploadError(
+            "Attach at least one photo or PDF of your handwritten answer."
+        )
+
+    return uploads
 
 
 @router.post("/draft", response_model=MainsDraftResponse)
@@ -82,6 +131,82 @@ def evaluate_answer(
         word_limit=request.word_limit,
         answer=request.answer,
         evaluation=evaluation,
+    )
+
+
+@router.post(
+    "/transcribe",
+    response_model=MainsTranscriptionOut,
+)
+def transcribe_answer_files(
+    files: List[UploadFile] = File(...),
+    user: User = Depends(get_current_user),
+):
+    """
+    Read handwritten answer photos / scanned PDFs into plain text so the
+    candidate can proofread before evaluating.
+    """
+    try:
+        transcription = transcribe_uploads(_read_uploads(files))
+    except UploadError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    return MainsTranscriptionOut(
+        answer=transcription.text,
+        transcription=transcription.to_dict(),
+    )
+
+
+@router.post(
+    "/evaluate-upload",
+    response_model=MainsEvaluateUploadResponse,
+)
+def evaluate_answer_files(
+    question: str = Form(..., min_length=3, max_length=2000),
+    paper: str = Form(default="GS2"),
+    word_limit: int = Form(default=250, ge=100, le=1000),
+    files: List[UploadFile] = File(...),
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """
+    Transcribe uploaded handwritten answers, then evaluate them exactly
+    like a typed answer.
+    """
+    try:
+        transcription = transcribe_uploads(_read_uploads(files))
+    except UploadError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    try:
+        evaluation = evaluate_mains_answer(
+            question=question,
+            answer=transcription.text,
+            paper=normalize_paper(paper),
+            word_limit=word_limit,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    record = MainsEvaluation(
+        user_id=user.id,
+        question=question,
+        paper=normalize_paper(paper),
+        word_limit=word_limit,
+        answer=transcription.text,
+        evaluation=evaluation,
+    )
+
+    db.add(record)
+    db.commit()
+
+    return MainsEvaluateUploadResponse(
+        question=question,
+        paper=normalize_paper(paper),
+        word_limit=word_limit,
+        answer=transcription.text,
+        evaluation=evaluation,
+        transcription=transcription.to_dict(),
     )
 
 

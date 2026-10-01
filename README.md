@@ -1,7 +1,7 @@
 # UPSC Study Assistant — Private Study Backend
 
 This is a personal UPSC preparation assistant. It combines grounded Q&A,
-Prelims MCQs, and a small study-tracking layer so the assistant can help you
+Prelims PYQ practice, and a small study-tracking layer so the assistant can help you
 decide what to study next and show whether you are actually maintaining a
 routine. It is intended to run locally for one person, not as a public SaaS.
 
@@ -58,12 +58,64 @@ answers to other users.
    (Make sure `QDRANT_URL` in `.env` points to your VM's public IP and
    port 6333, or tunnel it, when running ingestion from Colab.)
 
+## Importing Prelims questions
+
+Prelims practice uses existing questions from `prelims_questions`; it does
+not generate question text. Import a searchable GS Paper I PDF and its
+official answer key. The key CSV must have `question_number` and
+`correct_option` columns and may also include `explanation`. Only keyed
+questions are added to the practice bank. During import, the model assigns
+subject/topic labels and later selects and orders existing question IDs for
+a quiz; it is not allowed to write or rewrite questions.
+
+Example answer key:
+
+```csv
+question_number,correct_option,explanation
+1,B,"Short explanation from the official key"
+2,D,
+```
+
+```bash
+python scripts/import_prelims.py \
+  --question-pdf /path/to/official-gs-paper.pdf \
+  --answer-key /path/to/official-answer-key.csv \
+  --year 2024 \
+  --paper "GS Paper I" \
+  --source-url https://www.upsc.gov.in/examinations/previous-question-papers
+```
+
+`--question-pdf` can also be a direct PDF URL hosted on `upsc.gov.in`. For a
+local PDF, `--source-url` records its official UPSC listing page. The script
+requires the configured database and Ollama chat model to be available. It
+rejects non-UPSC remote PDF URLs, skips duplicate imports, and stores the
+source and year with each question. Scanned/image-only PDFs need OCR before
+import. Keep the answer key aligned to the question numbering in the paper.
+
+### Seed mock questions for UI testing
+
+To populate a local development bank with 100 clearly labeled mock questions,
+run this from the repository root while the local Postgres container is up:
+
+```bash
+DATABASE_URL=postgresql://upsc_user:upsc_pass@localhost:5432/upsc_db \
+  python -m scripts.seed_prelims_demo
+```
+
+The seed is safe to rerun: it adds only missing demo rows. These questions are
+marked `Demo mock question — not an official UPSC PYQ` and must not be treated
+as previous-year questions.
+
 ## API endpoints
 - `POST /auth/register` — `{email, password}`
 - `POST /auth/login` — form data `username`, `password` → returns JWT
 - `POST /ask` — `{question}` (requires `Authorization: Bearer <token>`)
-- `POST /quiz/generate` — `{topic, num_questions}`
+- `GET /quiz/catalog` — answer-keyed Prelims question-bank subjects and topics
+- `POST /quiz/generate` — `{subject, topic, num_questions}`; assembles a practice
+  set from stored questions only
 - `POST /quiz/submit` — `{quiz_attempt_id, selected_option}`
+- `POST /quiz/review` — `{attempt_ids}`; returns answer keys for the completed
+  quiz so skipped questions can be reviewed at the end
 - `POST /study/sessions` — log a focused session: `{topic, mode, minutes, notes}`
 - `GET /study/dashboard` — today's minutes, total time, streak, quiz accuracy,
   and the three weakest answered topics
